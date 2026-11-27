@@ -2,6 +2,7 @@
 
 import json
 import sys
+import time
 
 from .collectors import CollectorError, integrated_router_status, kuma_monitor_status, kuma_status, router_read, router_status
 from .web_api import RouterAPIError, router_web_status
@@ -52,6 +53,7 @@ def _dispatch(message: dict):
         name, args = params.get("name"), params.get("arguments", {})
         if not isinstance(args, dict):
             return _error(request_id, -32602, "Invalid params")
+        started = time.perf_counter()
         try:
             if name == "qrouter_router_status" and not args: result = router_status()
             elif name == "qrouter_router_read" and set(args) == {"section"}: result = router_read(args["section"])
@@ -60,6 +62,8 @@ def _dispatch(message: dict):
             elif name == "qrouter_kuma_status" and not args: result = kuma_status()
             elif name == "qrouter_kuma_monitor" and set(args) == {"monitor_name"}: result = kuma_monitor_status(args["monitor_name"])
             else: raise CollectorError("Unknown tool or invalid arguments")
+            emit_log("mcp_tool_succeeded", "DEBUG", component="mcp", operation=name,
+                     duration_ms=round((time.perf_counter() - started) * 1000))
             return {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False}}
         except (CollectorError, RouterAPIError) as exc:
             emit_log("mcp_tool_failed", "WARNING", component="mcp", error_type=type(exc).__name__)

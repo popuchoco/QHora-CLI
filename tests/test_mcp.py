@@ -29,6 +29,17 @@ class MCPTests(unittest.TestCase):
             mcp_server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "qrouter_web_status", "arguments": {"url": "http://127.0.0.1"}}})
         self.assertTrue(replies[0]["result"]["isError"])
 
+    def test_successful_tool_emits_optional_debug_timing(self):
+        replies = []
+        with patch.object(mcp_server, "reply", replies.append), \
+             patch.object(mcp_server, "router_status", return_value={"status": "ok"}), \
+             patch("qrouter_cli.mcp_server.emit_log") as log:
+            mcp_server.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "qrouter_router_status", "arguments": {}}})
+        self.assertFalse(replies[0]["result"]["isError"])
+        log.assert_called_once()
+        self.assertEqual(log.call_args.args[:2], ("mcp_tool_succeeded", "DEBUG"))
+        self.assertEqual(log.call_args.kwargs["operation"], "qrouter_router_status")
+
     def test_notification_without_id_is_silent_and_does_not_dispatch(self):
         replies = []
         with patch.object(mcp_server, "reply", replies.append), patch.object(mcp_server, "router_status") as status:

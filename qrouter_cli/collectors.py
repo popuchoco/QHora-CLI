@@ -1,6 +1,7 @@
 """Read-only QHora SSH and Uptime Kuma collectors."""
 
 import json
+import ipaddress
 import os
 import re
 import subprocess
@@ -81,7 +82,7 @@ def _parse_neighbors(output: str) -> list[dict]:
         for idx, field in enumerate(fields[:-1]):
             if field == "dev": row["interface"] = fields[idx + 1]
             elif field == "lladdr": row["mac"] = fields[idx + 1]
-        row["state"] = next((field for field in reversed(fields) if field.upper() in states), None)
+        row["state"] = next((field for field in reversed(fields) if field.upper() in states), fields[-1] if len(fields) > 1 and fields[-2] != "lladdr" else None)
         result.append(row)
     return result
 
@@ -93,13 +94,27 @@ def _parse_diagnostics(section: str, output: str) -> dict:
     return {section: [line[:200] for line in lines]}
 
 
+def _valid_ssh_host(host: str) -> bool:
+    if not host or len(host) > 253 or "%" in host or host.startswith("[") or host.endswith("]"):
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    if all(char in "0123456789." for char in host):
+        return False
+    labels = host.rstrip(".").split(".")
+    return all(0 < len(label) <= 63 and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label) for label in labels)
+
+
 def _ssh(command: str) -> str:
     host = os.environ.get("QROUTER_HOST", "")
     user = os.environ.get("QROUTER_USER", "")
     key = Path(os.environ.get("QROUTER_KEY_FILE", ""))
     known_hosts = Path(os.environ.get("QROUTER_KNOWN_HOSTS", ""))
     port = os.environ.get("QROUTER_PORT", "22")
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", host) or not re.fullmatch(r"[A-Za-z0-9_.-]+", user):
+    if not _valid_ssh_host(host) or not re.fullmatch(r"[A-Za-z0-9_.-]+", user):
         raise CollectorError("Set valid QROUTER_HOST and QROUTER_USER values")
     if not key.is_file() or not known_hosts.is_file():
         raise CollectorError("SSH key and pinned known_hosts files are required")
@@ -174,7 +189,8 @@ def router_read(section: str) -> dict:
     else:
         data = output.splitlines()
     result = {"section": section, "observed_at": datetime.now(timezone.utc).isoformat(), "data": data}
-    parse_failed = (name == "neighbors" and bool(output.strip()) and any(row["state"] is None for row in data)) or (name == "wifi" and bool(output.strip()) and not data)
+    known_neighbor_states = {"REACHABLE", "STALE", "DELAY", "PROBE", "FAILED", "INCOMPLETE", "PERMANENT", "NOARP"}
+    parse_failed = (name == "neighbors" and bool(output.strip()) and any(row["state"] is None or row["state"].upper() not in known_neighbor_states for row in data)) or (name == "wifi" and bool(output.strip()) and not data)
     if parse_failed:
         result["parse_warnings"] = [f"Some {name} output could not be fully parsed"]
         diagnostics = _parse_diagnostics(name, output)

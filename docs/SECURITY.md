@@ -61,7 +61,7 @@ QuRouter firmware errors are returned as bounded error text and numeric codes, n
 
 ## Operational guidance
 
-Optional structured stderr logs are enabled with `QROUTER_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR`. They are off by default and emit only allowlisted metadata; exception messages, URLs, credentials, and tokens are excluded. SSH raw parse diagnostics are separately opt-in with `QROUTER_INCLUDE_RAW_ON_PARSE_ERROR=1`; output is bounded to 10 lines of 200 characters, but can contain SSIDs, private addresses, or MAC addresses. Treat it as sensitive operational data.
+Optional structured stderr logs are enabled with `QROUTER_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR`. They are off by default. Every record has `timestamp`, `level`, and `event`; the only optional fields are `component`, `operation`, `source`, `status`, `error_type`, `error_code`, `http_status`, and `duration_ms`. MCP success timing is DEBUG-only. Exception messages, URLs, credentials, and tokens are excluded. SSH raw parse diagnostics are separately opt-in with `QROUTER_INCLUDE_RAW_ON_PARSE_ERROR=1`; output is bounded to 10 lines of 200 characters, but can contain SSIDs, private addresses, or MAC addresses. Treat it as sensitive operational data.
 
 1. Run on a trusted host and restrict who can invoke the MCP tools.
 2. Create a least-privilege QuRouter account and dedicated SSH account/key where supported.
