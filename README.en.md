@@ -144,10 +144,6 @@ python -m compileall -q qrouter_cli tests
 
 Start the MCP stdio server with `python -m qrouter_cli.mcp_server`. The CLI/MCP tools do not change router or Kuma configuration; Web API login/logout create and clear a short-lived session.
 
-## GitHub description
-
-> Read-only QHora-301W CLI and MCP server for QuRouter Web API, SSH diagnostics, and Uptime Kuma status pages.
-
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
