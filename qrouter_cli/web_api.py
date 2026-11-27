@@ -40,9 +40,6 @@ class RouterAPIError(RuntimeError):
 
 
 def _load_password() -> str:
-    value = os.environ.get("QROUTER_WEB_PASSWORD")
-    if value:
-        return value.rstrip("\r\n")
     filename = os.environ.get("QROUTER_WEB_PASSWORD_FILE", "")
     if filename:
         try:
@@ -52,6 +49,9 @@ def _load_password() -> str:
             raise RouterAPIError("QROUTER_WEB_PASSWORD_FILE is empty")
         except OSError as exc:
             raise RouterAPIError("Could not read QROUTER_WEB_PASSWORD_FILE") from exc
+    value = os.environ.get("QROUTER_WEB_PASSWORD")
+    if value:
+        return value.rstrip("\r\n")
     raise RouterAPIError("Set QROUTER_WEB_PASSWORD or QROUTER_WEB_PASSWORD_FILE")
 
 
@@ -81,7 +81,9 @@ class QuRouterWebAPI:
 
     @classmethod
     def from_environment(cls) -> "QuRouterWebAPI":
-        base = os.environ.get("QROUTER_WEB_BASE_URL", "http://192.168.100.1/miro/api")
+        base = os.environ.get("QROUTER_WEB_BASE_URL", "").strip()
+        if not base:
+            raise RouterAPIError("Set QROUTER_WEB_BASE_URL explicitly; no HTTP default is used")
         username = os.environ.get("QROUTER_WEB_USERNAME", "admin")
         allow_http = os.environ.get("QROUTER_WEB_ALLOW_INSECURE_HTTP", "").lower() in ("1", "true", "yes")
         return cls(base, username, _load_password(), allow_insecure_http=allow_http,

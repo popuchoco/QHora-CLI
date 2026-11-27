@@ -5,6 +5,7 @@ import sys
 
 from .collectors import CollectorError, integrated_router_status, kuma_monitor_status, kuma_status, router_read, router_status
 from .web_api import RouterAPIError, router_web_status
+from .logging_utils import emit_log
 
 PROTOCOL_VERSION = "2024-11-05"
 TOOLS = [
@@ -22,20 +23,35 @@ def reply(message: dict) -> None:
     sys.stdout.flush()
 
 
-def handle(message: dict) -> None:
-    method, request_id = message.get("method"), message.get("id")
-    params = message.get("params") or {}
-    if method == "notifications/initialized":
-        return
+def _error(request_id, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+def _dispatch(message: dict):
+    if not isinstance(message, dict):
+        return _error(None, -32600, "Invalid Request")
+    request_id = message.get("id")
+    has_id = "id" in message
+    method = message.get("method")
+    if message.get("jsonrpc") != "2.0" or not isinstance(method, str):
+        return _error(request_id if has_id else None, -32600, "Invalid Request")
+    if method.startswith("notifications/"):
+        return _error(request_id, -32600, "Notifications must not include an id") if has_id else None
+    if not has_id:
+        return None
+    params = message.get("params", {})
+    if not isinstance(params, dict):
+        return _error(request_id, -32602, "Invalid params")
     if method == "initialize":
-        reply({"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "qrouter-cli", "version": "0.1.0"}}})
-    elif method == "ping":
-        reply({"jsonrpc": "2.0", "id": request_id, "result": {}})
-    elif method == "tools/list":
-        reply({"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}})
-    elif method == "tools/call":
-        name = params.get("name")
-        args = params.get("arguments") or {}
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "qrouter-cli", "version": "0.1.0"}}}
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": request_id, "result": {}}
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
+    if method == "tools/call":
+        name, args = params.get("name"), params.get("arguments", {})
+        if not isinstance(args, dict):
+            return _error(request_id, -32602, "Invalid params")
         try:
             if name == "qrouter_router_status" and not args: result = router_status()
             elif name == "qrouter_router_read" and set(args) == {"section"}: result = router_read(args["section"])
@@ -43,20 +59,36 @@ def handle(message: dict) -> None:
             elif name == "qrouter_integrated_status" and not args: result = integrated_router_status()
             elif name == "qrouter_kuma_status" and not args: result = kuma_status()
             elif name == "qrouter_kuma_monitor" and set(args) == {"monitor_name"}: result = kuma_monitor_status(args["monitor_name"])
-            else: raise CollectorError("Unknown tool")
-            reply({"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False}})
+            else: raise CollectorError("Unknown tool or invalid arguments")
+            return {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False}}
         except (CollectorError, RouterAPIError) as exc:
-            reply({"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": str(exc)}], "isError": True}})
-    elif request_id is not None:
-        reply({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found"}})
+            emit_log("mcp_tool_failed", "WARNING", component="mcp", error_type=type(exc).__name__)
+            return {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": str(exc)}], "isError": True}}
+    return _error(request_id, -32601, "Method not found")
+
+
+def handle(message) -> None:
+    if isinstance(message, list):
+        if not message:
+            reply(_error(None, -32600, "Invalid Request"))
+            return
+        responses = [response for item in message if (response := _dispatch(item)) is not None]
+        if responses:
+            reply(responses)
+        return
+    response = _dispatch(message)
+    if response is not None:
+        reply(response)
 
 
 def main() -> None:
     for line in sys.stdin:
         try:
-            handle(json.loads(line))
-        except (json.JSONDecodeError, TypeError):
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            reply({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
             continue
+        handle(message)
 
 
 if __name__ == "__main__":

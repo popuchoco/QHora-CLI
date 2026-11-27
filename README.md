@@ -126,6 +126,8 @@ Server 使用 stdio JSON-RPC，提供下列唯讀 tools：
 
 QuRouter API 將密碼以 Base64 放入登入請求；Base64 不是加密。程式預設拒絕 HTTP，HTTPS 會驗證憑證，可用 `QROUTER_WEB_CA_FILE` 指定私有 CA。只有在可信任且隔離的管理 LAN 上，才以 `QROUTER_WEB_ALLOW_INSECURE_HTTP=1` 明確允許 HTTP；這會讓密碼以明文傳送。此設備 HTTPS 憑證若未受主機信任，請先部署／信任正確 CA，不要關閉驗證。
 
+`QROUTER_WEB_BASE_URL` 必須明確設定，程式不會套用任何 HTTP 預設網址。請優先用 `QROUTER_WEB_PASSWORD_FILE` 搭配作業系統 ACL 或 secret manager；避免設定 `QROUTER_WEB_PASSWORD`，因為環境變數可能被同機具權限的程序檢視。可設定 `QROUTER_LOG_LEVEL=INFO`（或 `DEBUG`、`WARNING`、`ERROR`）啟用 stderr JSON 日誌；預設關閉，且只輸出白名單欄位。整合狀態預設查找 Kuma monitor `QuRouter Web`，可用 `QROUTER_KUMA_MONITOR_NAME` 覆寫。SSH 原始解析診斷預設關閉；設 `QROUTER_INCLUDE_RAW_ON_PARSE_ERROR=1` 才會回傳最多 10 行、每行 200 字元的片段，其中可能含 SSID、IP 或 MAC。
+
 細節見 [Security Policy](SECURITY.md) 與 [docs/SECURITY.md](docs/SECURITY.md)。
 
 ## 文件

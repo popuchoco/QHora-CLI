@@ -29,7 +29,8 @@ It is not a network firewall, secret manager, sandbox, router hardening system, 
 
 ### QuRouter Web API
 
-- Prefer `QROUTER_WEB_PASSWORD_FILE` with host ACLs or a secret manager. Do not commit it or place the password in MCP JSON configuration.
+- Use `QROUTER_WEB_PASSWORD_FILE` with restrictive host ACLs or a secret manager. Avoid `QROUTER_WEB_PASSWORD`: process environment values can be inspected by privileged local processes. Never commit a password file or place the password in MCP JSON configuration.
+- `QROUTER_WEB_BASE_URL` must be set explicitly. The client has no default URL, avoiding accidental use of plaintext HTTP.
 - HTTPS is required by default. TLS certificate verification remains enabled; configure `QROUTER_WEB_CA_FILE` for a private CA.
 - The API requires Base64-encoded password data. Base64 is reversible encoding, not encryption.
 - HTTP is available only after the operator sets `QROUTER_WEB_ALLOW_INSECURE_HTTP=1`. Use that only on an isolated trusted management LAN; credentials travel in clear text.
@@ -59,6 +60,8 @@ The program can return firmware version, CPU/memory summary, uptime, interface n
 QuRouter firmware errors are returned as bounded error text and numeric codes, not as full raw HTTP response bodies. Passwords, bearer tokens, and private keys must not be logged or included in diagnostics.
 
 ## Operational guidance
+
+Optional structured stderr logs are enabled with `QROUTER_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR`. They are off by default and emit only allowlisted metadata; exception messages, URLs, credentials, and tokens are excluded. SSH raw parse diagnostics are separately opt-in with `QROUTER_INCLUDE_RAW_ON_PARSE_ERROR=1`; output is bounded to 10 lines of 200 characters, but can contain SSIDs, private addresses, or MAC addresses. Treat it as sensitive operational data.
 
 1. Run on a trusted host and restrict who can invoke the MCP tools.
 2. Create a least-privilege QuRouter account and dedicated SSH account/key where supported.

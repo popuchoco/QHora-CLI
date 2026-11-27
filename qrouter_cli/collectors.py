@@ -32,6 +32,67 @@ class CollectorError(RuntimeError):
     pass
 
 
+def _parse_free(output: str) -> dict | None:
+    for line in output.splitlines():
+        fields = line.split()
+        if fields and fields[0].lower().rstrip(":") == "mem" and len(fields) >= 4:
+            try:
+                values = [int(item.replace(",", "")) for item in fields[1:4]]
+                return dict(zip(("total", "used", "free"), values))
+            except ValueError:
+                return None
+    return None
+
+
+def _parse_wifi(output: str) -> list[dict]:
+    radios, current = [], None
+    for line in output.splitlines():
+        match = re.match(r"^\s*Interface\s+(\S+)", line)
+        if match:
+            current = {"interface": match.group(1)}
+            radios.append(current)
+            continue
+        if current is None:
+            continue
+        for pattern, key, convert in (
+            (r"\bchannel\s+(\d+)", "channel", int),
+            (r"\((\d+)\s*MHz\)", "frequency_mhz", int),
+            (r"\bwidth:\s*([^\s]+(?:\s+MHz)?)", "width", str),
+            (r"\bssid\s+(.+?)\s*$", "ssid", str),
+            (r"\btxpower\s+([\d.]+)\s*dBm", "txpower_dbm", float),
+        ):
+            found = re.search(pattern, line, re.IGNORECASE)
+            if found:
+                try:
+                    current[key] = convert(found.group(1))
+                except ValueError:
+                    continue
+    return radios
+
+
+def _parse_neighbors(output: str) -> list[dict]:
+    states = {"REACHABLE", "STALE", "DELAY", "PROBE", "FAILED", "INCOMPLETE", "PERMANENT", "NOARP"}
+    result = []
+    for line in output.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        row = {"address": fields[0], "interface": None, "state": None, "mac": None}
+        for idx, field in enumerate(fields[:-1]):
+            if field == "dev": row["interface"] = fields[idx + 1]
+            elif field == "lladdr": row["mac"] = fields[idx + 1]
+        row["state"] = next((field for field in reversed(fields) if field.upper() in states), None)
+        result.append(row)
+    return result
+
+
+def _parse_diagnostics(section: str, output: str) -> dict:
+    if os.environ.get("QROUTER_INCLUDE_RAW_ON_PARSE_ERROR", "").lower() not in ("1", "true", "yes"):
+        return {}
+    lines = output.splitlines()[:10]
+    return {section: [line[:200] for line in lines]}
+
+
 def _ssh(command: str) -> str:
     host = os.environ.get("QROUTER_HOST", "")
     user = os.environ.get("QROUTER_USER", "")
@@ -60,25 +121,17 @@ def _ssh(command: str) -> str:
 
 def router_status() -> dict:
     raw = {name: _ssh(command) for name, command in SSH_COMMANDS.items()}
-    mem = next((line.split() for line in raw["memory"].splitlines() if line.split()[:1] == ["Mem:"]), None)
-    if not mem or len(mem) < 4:
-        raise CollectorError("Could not parse free output")
+    memory = _parse_free(raw["memory"])
+    warnings = []
+    diagnostics = {}
+    if memory is None:
+        warnings.append("Could not parse free output")
+        diagnostics.update(_parse_diagnostics("memory", raw["memory"]))
     interfaces = [{"name": f[0], "state": f[1]} for line in raw["interfaces"].splitlines() if len(f := line.split()) >= 2]
-    radios, current = [], None
-    for line in raw["wifi"].splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[0] == "Interface":
-            current = {"interface": fields[1]}
-            radios.append(current)
-        if current:
-            for i, word in enumerate(fields):
-                if word == "channel" and i + 1 < len(fields):
-                    current["channel"] = int(fields[i + 1])
-                if word.startswith("("):
-                    try: current["frequency_mhz"] = int(word[1:])
-                    except ValueError: pass
-                if word == "width:" and i + 1 < len(fields):
-                    current["width"] = fields[i + 1]
+    radios = _parse_wifi(raw["wifi"])
+    if raw["wifi"].strip() and not radios:
+        warnings.append("Could not parse iw dev output")
+        diagnostics.update(_parse_diagnostics("wifi", raw["wifi"]))
     listeners = {"tcp": 0, "udp": 0}
     for line in raw["listeners"].splitlines():
         proto = line.split(maxsplit=1)[0].lower() if line.split() else ""
@@ -90,10 +143,13 @@ def router_status() -> dict:
         if len(f) >= 6:
             try: filesystems.append({"mount": f[-1], "size_kb": int(f[1]), "used_kb": int(f[2]), "available_kb": int(f[3])})
             except ValueError: continue
-    return {"observed_at": datetime.now(timezone.utc).isoformat(), "uptime": raw["uptime"].strip(),
-            "memory_kb": {"total": int(mem[1]), "used": int(mem[2]), "free": int(mem[3])},
+    result = {"observed_at": datetime.now(timezone.utc).isoformat(), "uptime": raw["uptime"].strip(),
+            "memory_kb": memory,
             "interfaces": interfaces, "wifi": radios, "listeners": listeners, "filesystems": filesystems,
             "mounts": raw["mounts"].splitlines(), "limitations": ["iptables is unavailable to the admin SSH account"]}
+    if warnings: result["parse_warnings"] = warnings
+    if diagnostics: result["parse_diagnostics"] = diagnostics
+    return result
 
 
 def router_read(section: str) -> dict:
@@ -108,16 +164,23 @@ def router_read(section: str) -> dict:
     elif name == "addresses":
         data = [{"interface": f[0], "state": f[1], "addresses": f[2:]} for line in output.splitlines() if len(f := line.split()) >= 2]
     elif name == "neighbors":
-        data = [{"address": f[0], "interface": f[f.index("dev") + 1] if "dev" in f else None,
-                 "state": f[-1], "mac": f[f.index("lladdr") + 1] if "lladdr" in f else None}
-                for line in output.splitlines() if len(f := line.split()) >= 2]
+        data = _parse_neighbors(output)
+    elif name == "wifi":
+        data = _parse_wifi(output)
     elif name == "listeners":
         data = [line.split() for line in output.splitlines()]
     elif name == "filesystems":
         data = [line.split() for line in output.splitlines()]
     else:
         data = output.splitlines()
-    return {"section": section, "observed_at": datetime.now(timezone.utc).isoformat(), "data": data}
+    result = {"section": section, "observed_at": datetime.now(timezone.utc).isoformat(), "data": data}
+    parse_failed = (name == "neighbors" and bool(output.strip()) and any(row["state"] is None for row in data)) or (name == "wifi" and bool(output.strip()) and not data)
+    if parse_failed:
+        result["parse_warnings"] = [f"Some {name} output could not be fully parsed"]
+        diagnostics = _parse_diagnostics(name, output)
+        if diagnostics:
+            result["parse_diagnostics"] = diagnostics
+    return result
 
 
 _KUMA_LOCK = threading.Lock()
@@ -223,7 +286,8 @@ def integrated_router_status() -> dict:
     except RouterAPIError as exc:
         web = {"source": "qrouter_web_api", "status": "unavailable", "error": str(exc)}
     try:
-        kuma = kuma_monitor_status("QuRouter Web")
+        monitor_name = os.environ.get("QROUTER_KUMA_MONITOR_NAME", "QuRouter Web").strip() or "QuRouter Web"
+        kuma = kuma_monitor_status(monitor_name)
     except CollectorError as exc:
         kuma = {"source": "uptime_kuma_status_page", "status": "unavailable", "error": str(exc)}
     states = (web["status"], kuma["status"])

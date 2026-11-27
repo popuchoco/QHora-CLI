@@ -6,6 +6,7 @@ import sys
 
 from .collectors import CollectorError, integrated_router_status, kuma_monitor_status, kuma_status, router_read, router_status
 from .web_api import RouterAPIError, router_web_status
+from .logging_utils import emit_log
 
 
 def main() -> None:
@@ -28,6 +29,7 @@ def main() -> None:
             result = kuma_monitor_status(args.name)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except (CollectorError, RouterAPIError) as exc:
+        emit_log("command_failed", "ERROR", component="cli", operation=f"{args.area}.{args.action}", error_type=type(exc).__name__)
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1) from exc
 

@@ -28,7 +28,7 @@ Results are UTF-8 JSON on stdout. Collector errors are JSON on stderr and return
 
 Implements the stdio MCP subset used by this project: `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`. The supported tool schemas reject unknown properties. The server writes protocol output to stdout and does not open an HTTP listener. Error results set `isError: true`.
 
-The server currently declares protocol version `2024-11-05` and a fixed server version `0.1.0`. It is a small local implementation rather than the official MCP Python SDK; host compatibility should be checked when upgrading MCP protocol versions.
+The server currently declares protocol version `2024-11-05` and a fixed server version `0.1.0`. It handles JSON-RPC notifications without replies, rejects notifications carrying IDs, supports batch requests, reports parse errors, and validates request/params shapes. It is a small local implementation rather than the official MCP Python SDK; host compatibility should be checked when upgrading MCP protocol versions.
 
 ### `qrouter_cli/web_api.py`
 
@@ -65,7 +65,7 @@ Overview projection deliberately drops `site`, WAN identity fields, and unrecogn
 
 #### Integrated status
 
-`integrated_router_status()` calls Web API and the exact Kuma monitor `QuRouter Web`. Each source has its own status. Missing Kuma or Web API data yields `partial` when the other source is available, and `unavailable` only when both sources are unavailable.
+`integrated_router_status()` calls Web API and an exact Kuma monitor, `QuRouter Web` by default. `QROUTER_KUMA_MONITOR_NAME` overrides that name. Each source has its own status. Missing Kuma or Web API data yields `partial` when the other source is available, and `unavailable` only when both sources are unavailable.
 
 ## 4. MCP tools and schemas
 
@@ -86,10 +86,10 @@ No tool accepts a command string, arbitrary endpoint, HTTP method, router settin
 
 | Variable | Required | Description |
 |---|---:|---|
-| `QROUTER_WEB_BASE_URL` | Yes | Router API base, e.g. `https://192.168.100.1/miro/api` |
+| `QROUTER_WEB_BASE_URL` | Yes | Explicit router API base, e.g. `https://192.168.100.1/miro/api`; no default is used |
 | `QROUTER_WEB_USERNAME` | Yes | Local QuRouter account; default is `admin` for compatibility |
-| `QROUTER_WEB_PASSWORD_FILE` | Yes, unless password env set | UTF-8 password file; preferred over environment secret |
-| `QROUTER_WEB_PASSWORD` | Alternative | Process environment secret; avoid where a file secret is practical |
+| `QROUTER_WEB_PASSWORD_FILE` | Yes, unless password env set | UTF-8 password file; strongly preferred, protected by host ACLs |
+| `QROUTER_WEB_PASSWORD` | Alternative | Process environment secret; discouraged because privileged processes may inspect it |
 | `QROUTER_WEB_CA_FILE` | No | Additional trusted CA PEM |
 | `QROUTER_WEB_ALLOW_INSECURE_HTTP` | No | Must be `1`, `true`, or `yes` to allow HTTP |
 
@@ -102,6 +102,7 @@ No tool accepts a command string, arbitrary endpoint, HTTP method, router settin
 | `QROUTER_USER` | Yes | SSH account |
 | `QROUTER_KEY_FILE` | Yes | Private key path |
 | `QROUTER_KNOWN_HOSTS` | Yes | Pinned host-key database |
+| `QROUTER_INCLUDE_RAW_ON_PARSE_ERROR` | No | Opt-in raw parsing excerpt, at most 10 lines × 200 characters; may contain network identifiers |
 
 ### Uptime Kuma
 
@@ -111,6 +112,13 @@ No tool accepts a command string, arbitrary endpoint, HTTP method, router settin
 | `KUMA_STATUS_SLUG` | Yes | Published Status Page slug |
 | `KUMA_CACHE_TTL` | No | Cache lifetime in seconds; default 15, bounded 1–300 |
 | `KUMA_STALE_MAX_AGE` | No | Maximum stale snapshot age in seconds; default 300, bounded 1–3600 |
+| `QROUTER_KUMA_MONITOR_NAME` | No | Exact monitor selected by integrated status; default `QuRouter Web` |
+
+### Logging
+
+| Variable | Required | Description |
+|---|---:|---|
+| `QROUTER_LOG_LEVEL` | No | Structured JSON stderr logs: `DEBUG`, `INFO`, `WARNING`, or `ERROR`; off by default; allowlisted metadata only |
 
 The sources are configured independently. Do not create placeholder credentials or empty config for unused sources.
 

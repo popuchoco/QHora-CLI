@@ -3,11 +3,27 @@ import unittest
 from io import BytesIO
 from unittest.mock import patch
 import urllib.error
+import os
+import tempfile
 
 from qrouter_cli.web_api import QuRouterWebAPI, RouterAPIError, _project_section, router_web_status
 
 
 class WebAPITests(unittest.TestCase):
+    def test_environment_requires_explicit_base_url(self):
+        with patch.dict(os.environ, {"QROUTER_WEB_BASE_URL": ""}, clear=True):
+            with self.assertRaisesRegex(RouterAPIError, "Set QROUTER_WEB_BASE_URL explicitly"):
+                QuRouterWebAPI.from_environment()
+
+    def test_password_file_takes_precedence_over_environment_secret(self):
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as secret_file:
+            secret_file.write("file-secret\n")
+            filename = secret_file.name
+        self.addCleanup(lambda: os.path.exists(filename) and os.unlink(filename))
+        with patch.dict(os.environ, {"QROUTER_WEB_PASSWORD_FILE": filename, "QROUTER_WEB_PASSWORD": "env-secret"}):
+            from qrouter_cli.web_api import _load_password
+            self.assertEqual(_load_password(), "file-secret")
+
     def test_login_encodes_password_and_never_forces_existing_session(self):
         api = QuRouterWebAPI("https://router/miro/api", "monitor", "sëcret")
         calls = []

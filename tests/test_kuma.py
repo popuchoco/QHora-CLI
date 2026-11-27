@@ -65,6 +65,13 @@ class KumaTests(unittest.TestCase):
         self.assertEqual(result["qurouter_web_api"], web)
         self.assertEqual(result["uptime_kuma_qurouter_web"], kuma)
 
+    def test_integrated_status_uses_configured_monitor_name(self):
+        with patch.dict(os.environ, {"QROUTER_KUMA_MONITOR_NAME": "Router availability"}), \
+             patch.object(collectors, "router_web_status", return_value={"status": "ok"}), \
+             patch.object(collectors, "kuma_monitor_status", return_value={"status": "ok"}) as lookup:
+            collectors.integrated_router_status()
+        lookup.assert_called_once_with("Router availability")
+
 
 if __name__ == "__main__":
     unittest.main()
