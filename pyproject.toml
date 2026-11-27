@@ -5,8 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qrouter-cli"
 version = "0.1.0"
-description = "Read-only QuRouter CLI and MCP tools for QHora routers"
+description = "Read-only QHora-301W CLI and MCP server for QuRouter Web API, SSH diagnostics, and Uptime Kuma status pages"
 requires-python = ">=3.11"
+readme = { file = "README.en.md", content-type = "text/markdown" }
+license = "MIT"
+authors = [{ name = "popuchoco" }]
 
 [project.scripts]
 qurouter = "qrouter_cli.cli:main"
