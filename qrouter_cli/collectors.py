@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -11,6 +12,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .web_api import RouterAPIError, router_web_status
 
 SSH_COMMANDS = {
     "uptime": "uptime",
@@ -97,7 +99,7 @@ def router_status() -> dict:
 def router_read(section: str) -> dict:
     commands = {"interfaces": "interfaces", "addresses": "addresses", "routes": "routes",
                 "neighbors": "neighbors", "wifi": "wifi", "listeners": "listeners", "filesystems": "filesystems"}
-    if section not in commands:
+    if not isinstance(section, str) or section not in commands:
         raise CollectorError("Unknown read-only router section")
     name = commands[section]
     output = _ssh(SSH_COMMANDS[name])
@@ -118,18 +120,114 @@ def router_read(section: str) -> dict:
     return {"section": section, "observed_at": datetime.now(timezone.utc).isoformat(), "data": data}
 
 
-def kuma_status() -> dict:
+_KUMA_LOCK = threading.Lock()
+_KUMA_CACHE: dict | None = None
+_KUMA_CACHE_AT = 0.0
+
+
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise CollectorError(f"{name} must be an integer") from exc
+    return max(minimum, min(value, maximum))
+
+
+def _http_json(url: str) -> dict:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise CollectorError("Uptime Kuma response exceeded 1 MiB")
+        result = json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        raise CollectorError(f"Uptime Kuma returned HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise CollectorError("Uptime Kuma request failed or timed out") from exc
+    except json.JSONDecodeError as exc:
+        raise CollectorError("Uptime Kuma returned invalid JSON") from exc
+    if not isinstance(result, dict):
+        raise CollectorError("Uptime Kuma returned an unexpected response")
+    return result
+
+
+def _kuma_snapshot() -> dict:
     base = os.environ.get("KUMA_BASE_URL", "").rstrip("/")
     slug = os.environ.get("KUMA_STATUS_SLUG", "")
-    if not base.startswith(("http://", "https://")) or not re.fullmatch(r"[A-Za-z0-9_-]+", slug):
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or not re.fullmatch(r"[A-Za-z0-9_-]+", slug):
         raise CollectorError("Set KUMA_BASE_URL and a valid KUMA_STATUS_SLUG")
-    result = {}
-    for key, path in (("page", f"/api/status-page/{slug}"), ("heartbeat", f"/api/status-page/heartbeat/{slug}")):
-        request = urllib.request.Request(base + path, headers={"Accept": "application/json"})
+    page = _http_json(base + f"/api/status-page/{slug}")
+    heartbeat = _http_json(base + f"/api/status-page/heartbeat/{slug}")
+    heartbeat_list = heartbeat.get("heartbeatList") or {}
+    status_names = {0: "down", 1: "up", 2: "pending", 3: "maintenance"}
+    monitors = []
+    for group in page.get("publicGroupList") or []:
+        if not isinstance(group, dict):
+            continue
+        for monitor in group.get("monitorList") or []:
+            if not isinstance(monitor, dict) or monitor.get("id") is None:
+                continue
+            points = heartbeat_list.get(str(monitor["id"])) or []
+            latest = points[-1] if points else {}
+            status_code = latest.get("status") if isinstance(latest, dict) else None
+            monitors.append({
+                "id": monitor["id"], "group": group.get("name"), "name": monitor.get("name"),
+                "type": monitor.get("type"), "status": status_names.get(status_code, "unknown"),
+                "ping_ms": latest.get("ping") if isinstance(latest, dict) else None,
+                "checked_at": latest.get("time") if isinstance(latest, dict) else None,
+            })
+    return {"source": "uptime_kuma_status_page", "status": "ok", "slug": slug,
+            "title": (page.get("config") or {}).get("title"), "monitors": monitors,
+            "observed_at": datetime.now(timezone.utc).isoformat()}
+
+
+def kuma_status(force_refresh: bool = False) -> dict:
+    global _KUMA_CACHE, _KUMA_CACHE_AT
+    ttl = _bounded_int_env("KUMA_CACHE_TTL", 15, 1, 300)
+    stale_limit = max(ttl, _bounded_int_env("KUMA_STALE_MAX_AGE", 300, 1, 3600))
+    with _KUMA_LOCK:
+        age = time.monotonic() - _KUMA_CACHE_AT
+        if _KUMA_CACHE is not None and age < ttl and not force_refresh:
+            return {**_KUMA_CACHE, "cache_age_seconds": round(age, 1)}
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
-                result[key] = json.loads(response.read(1024 * 1024))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise CollectorError(f"Uptime Kuma {key} request failed: {exc}") from exc
-    result["observed_at"] = datetime.now(timezone.utc).isoformat()
-    return result
+            snapshot = _kuma_snapshot()
+        except CollectorError:
+            if _KUMA_CACHE is not None and age <= stale_limit:
+                return {**_KUMA_CACHE, "status": "stale", "cache_age_seconds": round(age, 1),
+                        "warning": "Uptime Kuma refresh failed; showing last successful status-page snapshot"}
+            raise
+        _KUMA_CACHE = snapshot
+        _KUMA_CACHE_AT = time.monotonic()
+        return {**snapshot, "cache_age_seconds": 0}
+
+
+def kuma_monitor_status(monitor_name: str) -> dict:
+    if not isinstance(monitor_name, str) or not monitor_name.strip() or len(monitor_name) > 120:
+        raise CollectorError("monitor_name must be a non-empty exact monitor name")
+    snapshot = kuma_status()
+    matches = [monitor for monitor in snapshot["monitors"] if monitor.get("name") == monitor_name]
+    if not matches:
+        raise CollectorError("No monitor with that exact name exists on the configured Kuma status page")
+    return {"source": snapshot["source"], "status": snapshot["status"], "monitor_name": monitor_name,
+            "matches": matches, "cache_age_seconds": snapshot.get("cache_age_seconds", 0),
+            "observed_at": snapshot["observed_at"], "warning": snapshot.get("warning")}
+
+
+def integrated_router_status() -> dict:
+    """Cross-check direct QuRouter Web API data with its Kuma availability monitor."""
+    try:
+        web = router_web_status()
+    except RouterAPIError as exc:
+        web = {"source": "qrouter_web_api", "status": "unavailable", "error": str(exc)}
+    try:
+        kuma = kuma_monitor_status("QuRouter Web")
+    except CollectorError as exc:
+        kuma = {"source": "uptime_kuma_status_page", "status": "unavailable", "error": str(exc)}
+    states = (web["status"], kuma["status"])
+    status = "ok" if all(state == "ok" for state in states) else "unavailable" if all(state == "unavailable" for state in states) else "partial"
+    return {"source": "qhora_web_api_and_uptime_kuma", "status": status,
+            "qurouter_web_api": web, "uptime_kuma_qurouter_web": kuma,
+            "observed_at": datetime.now(timezone.utc).isoformat()}
