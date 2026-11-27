@@ -48,6 +48,19 @@ Uptime Kuma 的 HTTP(s) monitor 可以對第三方 API endpoint 發送請求，�
 
 若第三方系統提供 webhook，可由第三方直接送到 Uptime Kuma Push Monitor URL，以回報 heartbeat。Push token 是寫入型憑證，需視為 secret，不要回傳給模型或 UI。此方法適合上報可用性，不適合查詢詳細資料。
 
+### CLI 讀取 Kuma
+
+Kuma collector 只需要已發布的 Status Page，不用 Kuma 管理帳密，也不依賴 SSH：
+
+```powershell
+$env:KUMA_BASE_URL = "http://192.168.100.121:3001"
+$env:KUMA_STATUS_SLUG = "home-network"
+python -m qrouter_cli.cli kuma status
+python -m qrouter_cli.cli kuma monitor --name "QuRouter Web"
+```
+
+`kuma status` 列出頁面中各 monitor 的狀態與延遲；`kuma monitor` 以名稱精確篩選。MCP 對應 `qrouter_kuma_status` 與 `qrouter_kuma_monitor`。資料來自兩個唯讀 status-page endpoint，快取 15 秒，失敗時可暫回傳標示為 stale 的最近成功資料。
+
 ## QuRouter Web API
 
 CLI/MCP 使用固定 endpoint，不提供通用 URL 或任意 HTTP tool：
@@ -111,6 +124,43 @@ qurouter router status|interfaces|addresses|routes|neighbors|wifi|listeners|file
 qurouter kuma status
 qurouter kuma monitor --name "QuRouter Web"
 ```
+
+### 沒有 Uptime Kuma、SSH 停用
+
+不需要安裝 Kuma，也不必設定 `QROUTER_HOST`、SSH key 或 `known_hosts`。只設定 QuRouter Web API 的帳密來源，直接使用：
+
+```powershell
+$env:QROUTER_WEB_BASE_URL = "https://192.168.100.1/miro/api"
+$env:QROUTER_WEB_USERNAME = "monitor"
+$env:QROUTER_WEB_PASSWORD_FILE = "C:\secrets\qhora_web_password"
+$env:QROUTER_WEB_CA_FILE = "C:\secrets\qhora_ca.pem"
+python -m qrouter_cli.cli router web-status
+```
+
+MCP Host 呼叫 `qrouter_web_status` 即可。此模式不需要 `KUMA_BASE_URL`、`KUMA_STATUS_SLUG` 或任何 SSH 設定。不要呼叫 `qrouter_kuma_*` 或 `qrouter_router_*` SSH tools；`qrouter_integrated_status` 會回報 Kuma 區塊 unavailable，因為它本來就用來交叉檢查 Kuma。
+
+MCP Host 可只配置 Web API：
+
+```json
+{
+  "mcpServers": {
+    "qhora-web-only": {
+      "command": "uv",
+      "args": ["run", "--directory", "E:/QHora-CLI", "python", "-m", "qrouter_cli.mcp_server"],
+      "env": {
+        "QROUTER_WEB_BASE_URL": "https://192.168.100.1/miro/api",
+        "QROUTER_WEB_USERNAME": "monitor",
+        "QROUTER_WEB_PASSWORD_FILE": "C:/secrets/qhora_web_password",
+        "QROUTER_WEB_CA_FILE": "C:/secrets/qhora_ca.pem"
+      }
+    }
+  }
+}
+```
+
+若路由器只能使用 HTTP，先確認管理網路隔離可信，再額外設定 `QROUTER_WEB_BASE_URL=http://192.168.100.1/miro/api` 與 `QROUTER_WEB_ALLOW_INSECURE_HTTP=1`。密碼會以明文 HTTP 傳送（API 的 Base64 僅是編碼）；不建議跨 Wi-Fi 訪客網路、VPN 以外的網路或公網使用。正式使用應配置可驗證的 HTTPS 憑證與 CA。
+
+目前 Web-only 模式可讀 Overview 與韌體版本；這台 2.7.2.121 韌體的 Ports、WAN API 回 `-2`，所以結果標為 partial。沒有 Kuma 時就沒有獨立的 ping／Web heartbeat；沒有 SSH 時也不會提供 shell 才能取得的介面、Wi-Fi、listener 與 filesystem 摘要。
 
 MCP tools 包含 `qrouter_web_status`、`qrouter_integrated_status`、`qrouter_router_status`、`qrouter_router_read`、`qrouter_kuma_status` 與 `qrouter_kuma_monitor`。QuRouter HTTP API 使用登入後短期 Bearer token；永遠送 `force=false`，遇到既有管理工作階段就停止，不會踢除目前登入者。HTTP 明文傳送密碼預設禁止；只有在隔離的可信任 LAN 才以 `QROUTER_WEB_ALLOW_INSECURE_HTTP=1` 明確啟用，優先使用 HTTPS 和受信任 CA。密碼可從 secret file 讀取，不寫入 MCP 回應。
 
